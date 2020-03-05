@@ -32,20 +32,39 @@ def download_package_indexes(version: str, arch: str = "x86_64"):
     packages = []
     for source in sources:
         current_app.logger.info(f"Downloading {source}")
-        source_content = (
-            urllib.request.urlopen(f"{base_url}/{source}/Packages").read().decode()
-        )
-        source_packages = re.findall(r"Package: (.+)\n", source_content)
-        current_app.logger.info(f"Found {len(source_packages)} packages")
-        packages.extend(re.findall(r"Package: (.+)\n", source_content))
+        packages.extend(parse_package_index(f"{base_url}/{source}"))
 
     current_app.logger.info(f"Total of {len(packages)} packages found")
 
     r.sadd(f"packages-{version['name']}", *packages)
 
 
+def download_target_indexes(version):
+    for target in r.smembers(f"targets-{version['name']}"):
+        target = target.decode()
+        current_app.logger.info(f"Downloading {target}")
+        target_url = "/".join(
+            [
+                current_app.config["UPSTREAM_URL"],
+                version.get("path"),
+                "targets",
+                target,
+                "packages",
+            ]
+        )
+        r.sadd(f"packages-{version['name']}-{target}", *parse_package_index(target_url))
+
+
+def parse_package_index(url):
+    source_content = urllib.request.urlopen(f"{url}/Packages").read().decode()
+    source_packages = re.findall(r"Package: (.+)\n", source_content)
+    current_app.logger.info(f"Found {len(source_packages)} packages")
+    return re.findall(r"Package: (.+)\n", source_content)
+
+
 def merge_profiles(version: dict, profiles: list, base_url: str):
     profiles_dict = {}
+    targets = set()
     names_json_overview = {}
 
     for profile_info in profiles:
@@ -80,6 +99,9 @@ def merge_profiles(version: dict, profiles: list, base_url: str):
                 "images": profile_info["images"],
             }
 
+            targets.add(profile_info["target"])
+
+    r.sadd(f"targets-{version['name']}", *targets)
     r.hmset(f"profiles-{version['name']}", profiles_dict)
     (current_app.config["JSON_PATH"] / f"names-{version['name']}.json").write_text(
         json.dumps(names_json_overview, sort_keys=True, indent="  ")
@@ -151,3 +173,4 @@ def init():
         current_app.logger.info(f"Setup {version['name']}")
         get_json_files(version)
         download_package_indexes(version)
+        download_target_indexes(version)
